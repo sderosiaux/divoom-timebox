@@ -38,8 +38,12 @@ def log(message: str) -> None:
 def segments(args) -> Iterator[tuple[object, float | None]]:
     """What to play, forever. Each item is an effect and how long to hold it."""
     if args.what == "logo":
+        # One instance, yielded again and again: the heartbeat slices the run
+        # into spans, and rebuilding would drop the render cache and snap the
+        # animation back to its first frame every time.
+        logo = effects.Logo(str(args.path or LOGO), args.mode, fps=args.fps)
         while True:
-            yield effects.Logo(str(args.path or LOGO), args.mode, fps=args.fps), None
+            yield logo, None
 
     elif args.what == "play":
         for seed in itertools.count(1):
