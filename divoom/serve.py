@@ -64,6 +64,13 @@ def segments(args) -> Iterator[tuple[object, float | None]]:
             for mode in effects.Logo.MODES:
                 yield effects.Logo(str(args.path or LOGO), mode, seed, fps=args.fps), args.each
 
+    elif args.what == "mix":
+        for seed in itertools.count(1):
+            for mode in effects.Logo.MODES:
+                yield effects.Logo(str(args.path or LOGO), mode, seed, fps=args.fps), args.each
+                yield effects.build(sorted(effects.ABSTRACT)[seed % len(effects.ABSTRACT)],
+                                    seed), args.each
+
 
 def device(hint: str | None) -> tuple[str, str]:
     def wanted(row: tuple[str, str, str]) -> bool:
@@ -80,7 +87,8 @@ def device(hint: str | None) -> tuple[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="divoom.serve")
-    ap.add_argument("what", choices=["logo", "logocycle", "play", "face", "screensaver"])
+    ap.add_argument("what",
+                    choices=["logo", "logocycle", "mix", "play", "face", "screensaver"])
     ap.add_argument("mode", nargs="?", default="spin",
                     help="logo mode, effect name, or character")
     ap.add_argument("--path", help="image for the logo modes")
@@ -88,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--warm", type=float, default=0.3)
     ap.add_argument("--bright", type=int, default=85)
     ap.add_argument("--colors", type=int, default=255)
-    ap.add_argument("--each", type=float, default=45, help="seconds per item when cycling")
+    ap.add_argument("--each", type=float, default=60, help="seconds per item when cycling")
+    ap.add_argument("--fade", type=float, default=0.8, help="seconds of dip between items")
     ap.add_argument("--pace", type=float, default=2.0, help="idle speed for faces")
     ap.add_argument("--channel", type=int, default=1)
     ap.add_argument("--mac", help="address or name fragment")
@@ -118,7 +127,8 @@ def main(argv: list[str] | None = None) -> int:
                 # An open-ended segment never returns, so slice it into spans
                 # short enough to let the heartbeat land.
                 span = seconds if seconds is not None else HEARTBEAT
-                player.play(link, effect, args.fps, span, args.colors, args.warm)
+                player.play(link, effect, args.fps, span, args.colors, args.warm,
+                            fade=args.fade if seconds is not None else 0.0)
                 if time.monotonic() - beat >= HEARTBEAT:
                     beat = time.monotonic()
                     log(f"alive, {(beat - started) / 3600:.1f}h on this link")
