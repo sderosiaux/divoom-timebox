@@ -128,7 +128,7 @@ failures that actually happen, because neither kills the process: the speaker
 drops its Bluetooth link when idle or flat, and macOS sometimes reclaims it as
 an audio device. Both leave a live process holding a dead channel. So
 `divoom.serve` runs its own reconnect loop, backing off from 5s to 2 minutes and
-resetting once a run has held for a minute — without that reset, a failure after
+resetting once a run has held for a minute. Without that reset, a failure after
 six good hours would inherit a two-minute wait.
 
 Sleeping the Mac suspends the process and powers down Bluetooth. The panel keeps
