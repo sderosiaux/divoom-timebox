@@ -1,0 +1,6 @@
+ref/
+bin/
+.venv/
+__pycache__/
+captures/
+.DS_Store
