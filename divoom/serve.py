@@ -28,6 +28,7 @@ LOGO = Path(__file__).resolve().parent.parent / "assets/logo/conduktor.png"
 FIRST_WAIT = 5.0
 MAX_WAIT = 120.0
 SETTLED = 60.0          # a run this long counts as healthy; reset the backoff
+HEARTBEAT = 1800.0      # the device cannot report its battery, so log uptime instead
 
 
 def log(message: str) -> None:
@@ -108,8 +109,15 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(0.4)
 
             wait = FIRST_WAIT
+            beat = time.monotonic()
             for effect, seconds in segments(args):
-                player.play(link, effect, args.fps, seconds, args.colors, args.warm)
+                # An open-ended segment never returns, so slice it into spans
+                # short enough to let the heartbeat land.
+                span = seconds if seconds is not None else HEARTBEAT
+                player.play(link, effect, args.fps, span, args.colors, args.warm)
+                if time.monotonic() - beat >= HEARTBEAT:
+                    beat = time.monotonic()
+                    log(f"alive, {(beat - started) / 3600:.1f}h on this link")
 
         except KeyboardInterrupt:
             log("stopping")
