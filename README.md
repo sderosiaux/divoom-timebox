@@ -49,6 +49,8 @@ Pair the Timebox in System Settings first. macOS grabs it as an audio device and
 
 ## Using it
 
+![effects](docs/effects.png)
+
 ```
 fill red                      img photo.png            text "hello"
 play plasma                   pan ~/Pictures/big.jpg   screensaver 45
@@ -56,6 +58,35 @@ logo spin                     face doom                bright 60
 ```
 
 Effects stream as still images rather than uploading device animations, which sidesteps the Evo's ~60-frame animation cap. The link sustains 30fps at 1 KB per frame.
+
+### The logo, six ways
+
+![logo modes](docs/logo-modes.png)
+
+`spin` rotates, `zoom` collapses to a point and reopens, `orbit` does both, `beat`
+thumps twice and rests, `ripple` runs a wave through the mark, `pulse` breathes.
+
+A mark with four-fold symmetry can rotate and still land on itself every 90
+degrees, so only the first quarter-turn is animated. The coverage field is
+averaged over its four quarter-turns before thresholding, which makes the
+symmetry hold by construction at any angle rather than by luck. Coverage drives
+brightness instead of an on/off mask, and that is what buys sub-pixel motion: a
+hard threshold makes the shape jump a whole LED at a time, which on a 16-wide
+panel reads as stepping rather than turning.
+
+### Faces
+
+![characters](docs/characters.png)
+
+`doomsprite` on the second row is the approach that did not work. Downscaling a
+24x29 sprite looks reasonable and produces scattered orange with no silhouette,
+because a face that size carries shading the panel cannot resolve. The row above
+it is the same face redrawn at 16x16 from the sprite as reference, with every
+tone that only existed to shade thrown away.
+
+The source sprites come from Freedoom:
+
+![freedoom sprites](docs/freedoom-sprites.png)
 
 Faces are driven over a socket, so anything can move them:
 
