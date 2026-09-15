@@ -94,6 +94,26 @@ Faces are driven over a socket, so anything can move them:
 printf 'hurt 25\n' | nc 127.0.0.1 8777      # also heal, health, evil, god, revive
 ```
 
+## Running it all day
+
+```bash
+./install-agent.sh install logo spin      # also: logocycle, screensaver, face, play
+./install-agent.sh log                    # follow it
+./install-agent.sh stop
+```
+
+This hands the panel to launchd, so it survives closing the terminal that
+started it and comes back at login. Two failure modes need handling and neither
+should need a human: the speaker drops its Bluetooth link when idle or flat, and
+macOS sometimes reclaims it as an audio device. `divoom.serve` reconnects with
+backoff from 5s to 2 minutes, resetting once a run has held for a minute, and
+launchd restarts the interpreter if it dies outright.
+
+Verified: killed with `SIGKILL`, launchd brought it back and it reconnected in
+three seconds. A flat battery, encountered by accident, surfaces as
+`kIOReturnTimeout` and retries rather than exiting. Login persistence rests on
+`RunAtLoad` and has not been tested across a reboot.
+
 ## The camera loop
 
 ```
