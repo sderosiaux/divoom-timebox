@@ -36,6 +36,13 @@ HELP = """
   check                      photograph the panel and diff it against what we sent
   autotest                   send every pattern and verify each one by camera
   play <effect> [seconds]    plasma fire life rain stars bounce rings
+                             snake pong breakout tetris invaders pacface ghostface
+                             pacman tron
+                             hyperspace tunnel
+                             streams circuit metro synapses
+  arcade [seconds]           cycle the ten arcade / space demos (autoplay)
+  networks [seconds]         cycle the four panning network styles
+  demo [seconds]             one pass of all fourteen new scenes (default 5s each)
   face [who] [health]        doom · doomsprite · max · shades — driven by a TCP event feed
   pan <image> [seconds]      slow drift + zoom over an image bigger than 16x16
   logo [mode] [path] [sec]   pulse · spin · zoom · ripple · orbit · beat
@@ -183,6 +190,12 @@ class Shell:
                 self.logo(args)
             case "screensaver":
                 self.screensaver(float(args[0]) if args else 45.0)
+            case "arcade":
+                self.screensaver(float(args[0]) if args else 30.0, effects.ARCADE)
+            case "networks":
+                self.screensaver(float(args[0]) if args else 30.0, effects.NETWORKS)
+            case "demo":
+                self.demo(float(args[0]) if args else 5.0)
             case "warm":
                 self.warm = max(0.0, min(1.0, float(args[0])))
                 print(f"balance {self.warm:.0%} — 0 = fidèle, 1 = neutre à l'œil")
@@ -243,16 +256,26 @@ class Shell:
                 path = arg
         self.play(effects.Logo(path, mode, self.seed, fps=self.fps), seconds)
 
-    def screensaver(self, each: float) -> None:
+    def screensaver(self, each: float, registry=None) -> None:
         print(f"rotation toutes les {each:g}s — Ctrl-C pour arrêter")
         seed = self.seed
         try:
             while True:
-                for name in sorted(effects.ABSTRACT):
+                for name in (registry if registry is not None else sorted(effects.ABSTRACT)):
                     seed += 1
                     print(f"  {name}")
                     player.play(self.link, effects.build(name, seed), self.fps, each,
                                 self.colors, self.warm)
+        except KeyboardInterrupt:
+            print("\ninterrompu")
+
+    def demo(self, each: float = 5.0) -> None:
+        names = list(effects.ARCADE | effects.NETWORKS)
+        try:
+            for index, name in enumerate(names, 1):
+                print(f"  {index}/{len(names)}  {name} — {each:g}s", flush=True)
+                player.play(self.link, effects.build(name, self.seed), self.fps, each,
+                            self.colors, self.warm)
         except KeyboardInterrupt:
             print("\ninterrompu")
 

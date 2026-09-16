@@ -1,6 +1,6 @@
 # divoom-timebox
 
-Drive a Divoom Timebox Evo from a Mac. Effects, screensavers, Doom-style mugshots, and a webcam loop that checks the panel really shows what you sent.
+Drive a Divoom Timebox Evo from a Mac. Arcade demos, effects, screensavers, Doom-style mugshots, and a webcam loop that checks the panel really shows what you sent.
 
 ## What is reused, what is not
 
@@ -59,6 +59,77 @@ logo spin                     face doom                bright 60
 
 Effects stream as still images rather than uploading device animations, which sidesteps the Evo's ~60-frame animation cap. The link sustains 30fps at 1 KB per frame.
 
+### Arcade and space
+
+![arcade previews](docs/arcade.gif)
+
+Ten autonomous scenes drawn directly at 16×16. They play themselves, handle
+collisions, and start new rounds. These are screensaver demos, without keyboard
+or controller input. Motion is tuned for the default 20 fps.
+
+| Effect | What happens |
+| --- | --- |
+| `snake` | A growing snake seeks food and checks that it can still reach its tail. |
+| `pong` | Two players predict rebounds across the full panel, without a score overlay. |
+| `breakout` | A paddle clears rows of bricks; losing a ball preserves the remaining board. |
+| `tetris` | Seven-bag pieces enter at the centre, rotate, slide, and fall into a 10×15 well. Completed lines wipe away. |
+| `invaders` | Nine small 4×3 aliens keep a fixed silhouette as they march in three rows. They descend slowly; the pilot dodges return fire and a hit preserves wave progress. |
+| `pacface` | A large yellow mascot chomps pellets and blinks. |
+| `ghostface` | A large arcade ghost looks around, blinks, and waves its feet. |
+| `tron` | Four light cycles turn, crash, and respawn; old trails fade away. |
+| `hyperspace` | Stars accelerate into blue-white streaks, then return to cruising speed. |
+| `tunnel` | A cylindrical spiral flows outward around a dark centre. |
+
+In the interactive shell:
+
+```text
+play snake 30
+play hyperspace 30
+arcade 30                     # repeat the ten scenes, 30 seconds each
+demo 5                        # one pass: arcade, then the four network styles
+```
+
+`screensaver` and `mix` include the new scenes too. The older `stars` effect
+remains available for a steady starfield without the acceleration cycle.
+The original tiny maze remains available as `play pacman`; the default arcade
+rotation uses the larger faces because the maze was hard to recognise in live review.
+Give `play breakout 60` or `play tetris 60` time to develop: `demo 5` deliberately
+cuts each scene off after five seconds, even when a round is still in progress.
+
+### Panning networks
+
+![network previews](docs/networks.gif)
+
+Links grow while the camera pans, packets travel along them, and receiving
+intersections glow. The view is zoomed in on roughly one or two intersections;
+bright, wide traces stay readable on the LEDs. Each style has a different layout:
+
+| Effect | Layout |
+| --- | --- |
+| `streams` | A square mesh with cyan and magenta links. |
+| `circuit` | Angular circuit traces with green and gold signals. |
+| `metro` | Parallel lanes, switching connections, and horizontal drift. |
+| `synapses` | An irregular triangular web of magenta and cyan nodes. |
+
+Use `play streams 30` for one style or `networks 30` to cycle through all four.
+Geometry wraps over a larger world, and LED coverage controls line brightness
+and node halos as they move between pixels.
+
+Render previews without connecting to the panel:
+
+```bash
+.venv/bin/python -m divoom.preview --output docs/arcade.gif
+.venv/bin/python -m divoom.preview streams circuit metro synapses --output docs/networks.gif
+```
+
+This produces a GIF and a PNG contact sheet from the actual frame generators.
+Previews show geometry and timing; panel colour and bloom still need live review.
+
+Research references: [Adafruit's Tiny Tetris and Snake](https://learn.adafruit.com/diy-3d-printed-handheld-pocket-game-tiny-tetris-snake/overview)
+demonstrates both games on a small LED matrix; [Aurora](https://github.com/pixelmatix/aurora)
+collects games and procedural patterns for a 32×32 matrix. The implementations
+here are new, with native 16×16 geometry rather than copied or downscaled assets.
+
 ### The logo, six ways
 
 ![logo modes](docs/logo-modes.png)
@@ -109,7 +180,9 @@ Anything after `install` goes straight to `python -m divoom.serve`:
 logocycle    every logo mode in turn
 logo spin    one mode, forever
 mix          logo modes interleaved with the abstract effects
-screensaver  the abstract effects only
+screensaver  all standalone effects, including arcade and networks
+arcade      the ten arcade and space demos
+networks    the four panning network styles
 face doom    a mugshot, reacting to the event socket
 --each N     seconds per item, --fade N seconds of dip between them
 --bright N   the dominant lever on battery life
@@ -174,7 +247,9 @@ hair tone       separation from skin, as the panel renders it
 .venv/bin/python -m pytest tests/ -q
 ```
 
-41 tests. The differential ones need the reference implementations, which are not vendored:
+The suite checks deterministic frames, wire encoding, collisions, line clears,
+round restarts, service rotations, and long-running autoplay. The differential
+tests need the reference implementations, which are not vendored:
 
 ```bash
 mkdir -p ref && cd ref

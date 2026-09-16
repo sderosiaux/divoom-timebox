@@ -19,6 +19,7 @@ usage: ./install-agent.sh install [args...]   # default: logo spin
 Anything after `install` is passed to `python -m divoom.serve`, so:
   ./install-agent.sh install logocycle --each 90
   ./install-agent.sh install screensaver --each 60
+  ./install-agent.sh install arcade --each 30
   ./install-agent.sh install face doom
 EOF
 }

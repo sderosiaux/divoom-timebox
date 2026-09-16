@@ -11,6 +11,7 @@ driving it from here removes the limit entirely.
 
 import math
 import random
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -450,7 +451,856 @@ class Logo(Effect):
         return _as_pixels(frame)
 
 
-ABSTRACT = {e.name: e for e in (Plasma, Fire, Life, Rain, Starfield, Bounce, Rings)}
+# Arcade artwork is drawn on the LED grid. Primary/secondary RGB colours keep
+# neighbouring objects distinct without relying on subtle, unmeasured shades.
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+CYAN = (0, 255, 255)
+PINK = (255, 0, 255)
+GREEN = (0, 255, 0)
+YELLOW = (255, 255, 0)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+
+
+def _dot(frame, x, y, color):
+    x, y = round(x), round(y)
+    if 0 <= x < N and 0 <= y < N:
+        frame[y, x] = color
+
+
+def _sprite(frame, x, y, rows, color):
+    for dy, row in enumerate(rows):
+        for dx, pixel in enumerate(row):
+            if pixel != ".":
+                _dot(frame, x + dx, y + dy, color)
+
+
+def _path(start, targets, blocked, cells):
+    """Shortest grid path; fixed neighbour order also makes replays reproducible."""
+    queue, parents = deque([start]), {start: None}
+    while queue:
+        point = queue.popleft()
+        if point in targets:
+            route = []
+            while point != start:
+                route.append(point)
+                point = parents[point]
+            return route[::-1]
+        x, y = point
+        for nxt in ((x + 1, y), (x, y + 1), (x - 1, y), (x, y - 1)):
+            if nxt in cells and nxt not in blocked and nxt not in parents:
+                parents[nxt] = point
+                queue.append(nxt)
+    return []
+
+
+class Snake(Effect):
+    """Food-seeking snake, with a tail escape check before committing to a meal."""
+
+    name = "snake"
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.cells = {(x, y) for y in range(1, N - 1) for x in range(1, N - 1)}
+        self.tick = self.pause = 0
+        self._reset()
+
+    def _reset(self):
+        self.body = [(7, 8), (6, 8), (5, 8), (4, 8)]
+        self._food()
+
+    def _food(self):
+        free = sorted(self.cells - set(self.body))
+        self.food = self.rng.choice(free) if free else None
+
+    def _move(self):
+        route = _path(self.body[0], {self.food}, set(self.body[:-1]), self.cells)
+        if route:
+            future = self.body[:]
+            for step in route:
+                future.insert(0, step)
+                if step != self.food:
+                    future.pop()
+            if not _path(future[0], {future[-1]}, set(future[:-1]), self.cells):
+                route = []
+        if not route:
+            route = _path(self.body[0], {self.body[-1]}, set(self.body[:-1]), self.cells)
+        if not route:
+            self.pause = 20
+            return
+        head = route[0]
+        self.body.insert(0, head)
+        if head == self.food:
+            self._food()
+        else:
+            self.body.pop()
+        if len(self.body) >= 60 or self.food is None:
+            self.pause = 20
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        if self.pause:
+            self.pause -= 1
+            if not self.pause:
+                self._reset()
+        elif self.tick % 3 == 0:
+            self._move()
+        frame = np.zeros((N, N, 3))
+        frame[[0, -1], :] = frame[:, [0, -1]] = (0, 0, 48)
+        for x, y in self.body:
+            _dot(frame, x, y, GREEN)
+        _dot(frame, *self.body[0], CYAN)
+        if self.food:
+            _dot(frame, *self.food, RED)
+        return _as_pixels(frame)
+
+
+class Pong(Effect):
+    """Two opponents trade rebounds across the full panel."""
+
+    name = "pong"
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.tick = 0
+        self.scores = [0, 0]
+        self.paddles = [8.0, 8.0]
+        self.targets = [8.0, 8.0]
+        self._serve()
+
+    def _serve(self):
+        self.x, self.y = 7.5, self.rng.uniform(5, 11)
+        self.dx = self.rng.choice((-0.36, 0.36))
+        self.dy = self.rng.choice((-0.23, 0.23))
+        self.pause = 16
+        self.rally = 0
+        self._aim()
+
+    def _aim(self):
+        side = int(self.dx > 0)
+        contact = 14 if side else 1
+        landing = self.y + self.dy * (contact - self.x) / self.dx
+        # Reflect the prediction off the top/bottom walls. An aim is held for
+        # the whole flight, rather than wobbling a paddle with a sine wave.
+        landing = 15 - abs(landing % 30 - 15)
+        error = self.rng.uniform(-0.5, 0.5)
+        if self.rally > 3 and self.rng.random() < 0.3:
+            error += self.rng.choice((-2.5, 2.5))
+        self.targets[side] = max(1, min(14, landing + error))
+        self.targets[1 - side] = 8
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        for side in range(2):
+            self.paddles[side] += max(-0.34, min(0.34, self.targets[side] - self.paddles[side]))
+        if self.pause:
+            self.pause -= 1
+        else:
+            old_x = self.x
+            self.x += self.dx
+            self.y += self.dy
+            if not 0 <= self.y <= 15:
+                self.y = -self.y if self.y < 0 else 30 - self.y
+                self.dy *= -1
+            side = 0 if self.dx < 0 else 1
+            crossed = old_x > 1 >= self.x if side == 0 else old_x < 14 <= self.x
+            offset = self.y - round(self.paddles[side])
+            if crossed and abs(offset) <= 1.5:
+                # Only a crossing can hit. A missed ball must not get caught
+                # retroactively by a paddle after passing behind its face.
+                self.x = 2 - self.x if side == 0 else 28 - self.x
+                self.dx = (-1 if side else 1) * min(0.58, abs(self.dx) + 0.018)
+                self.dy = offset * 0.29
+                if abs(self.dy) < 0.12:
+                    self.dy = self.rng.choice((-0.12, 0.12))
+                self.rally += 1
+                self._aim()
+            elif self.x < 0 or self.x > 15:
+                self.scores[1 - side] += 1
+                if max(self.scores) == 8:
+                    self.scores = [0, 0]
+                self._serve()
+        frame = np.zeros((N, N, 3))
+        frame[::2, 7] = (24, 24, 24)
+        for x, y, color in ((0, self.paddles[0], CYAN), (15, self.paddles[1], PINK)):
+            for offset in (-1, 0, 1):
+                _dot(frame, x, y + offset, color)
+        _dot(frame, self.x, self.y, WHITE)
+        return _as_pixels(frame)
+
+
+class Breakout(Effect):
+    """A paddle clears four rows of bricks, then serves a fresh board."""
+
+    name = "breakout"
+    COLORS = (RED, YELLOW, GREEN, CYAN)
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self._reset()
+
+    def _reset(self):
+        self.bricks = {(x, y) for y in range(4) for x in range(4)}
+        self._serve()
+
+    def _serve(self):
+        self.x, self.y = 7.0, 12.0
+        self.dx, self.dy = self.rng.choice((-0.22, 0.22)), -0.32
+        self.paddle = 7.0
+        self.pause = 16
+
+    def next(self) -> list[RGB]:
+        if self.pause:
+            self.pause -= 1
+            if not self.pause and not self.bricks:
+                self._reset()
+        else:
+            self.paddle = min(13, max(2, self.paddle + max(-0.3, min(0.3, self.x - self.paddle))))
+            old_x, old_y = round(self.x), round(self.y)
+            self.x += self.dx
+            self.y += self.dy
+            if not 0 <= self.x <= 15:
+                self.x = max(0, min(15, self.x))
+                self.dx *= -1
+            if self.y < 0:
+                self.y, self.dy = 0, abs(self.dy)
+            x, y = round(self.x), round(self.y)
+            brick = (x // 4, y // 2)
+            if y % 2 == 1 and x % 4 < 3 and brick in self.bricks:
+                self.bricks.remove(brick)
+                if y != old_y:
+                    self.dy *= -1
+                elif x != old_x:
+                    self.dx *= -1
+                else:
+                    self.dy *= -1
+                if not self.bricks:
+                    self.pause = 24
+            if self.dy > 0 and self.y >= 13.5 and abs(self.x - self.paddle) <= 2.3:
+                self.y, self.dy = 13.5, -abs(self.dy)
+                self.dx = (self.x - self.paddle) * 0.16 + self.rng.uniform(-0.08, 0.08)
+            elif self.y > 15:
+                self._serve()
+        frame = np.zeros((N, N, 3))
+        for x, y in self.bricks:
+            frame[1 + 2 * y, 4 * x:4 * x + 3] = self.COLORS[y]
+        for dx in range(-2, 3):
+            _dot(frame, self.paddle + dx, 15, CYAN)
+        _dot(frame, self.x, self.y, WHITE)
+        return _as_pixels(frame)
+
+
+class Tetris(Effect):
+    """Seven-bag falling blocks; an autoplayer favours lines and avoids holes."""
+
+    name = "tetris"
+    WIDTH, HEIGHT = 10, 15
+    SHAPES = ("####", "##/##", ".#./###", ".##/##.", "##./.##", "#../###", "..#/###")
+    COLORS = (BLACK, CYAN, YELLOW, PINK, GREEN, RED, BLUE, (255, 128, 0))
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.tick = self.pause = self.lines = 0
+        self.bag = []
+        self.clearing = []
+        self.board = np.zeros((self.HEIGHT, self.WIDTH), dtype=int)
+        self._spawn()
+
+    def _fits(self, shape, x, y):
+        return all(0 <= x + dx < self.WIDTH and 0 <= y + dy < self.HEIGHT
+                   and self.board[y + dy, x + dx] == 0 for dx, dy in shape)
+
+    @staticmethod
+    def _rotate(shape):
+        turned = [(-y, x) for x, y in shape]
+        mx, my = min(x for x, y in turned), min(y for x, y in turned)
+        return sorted((x - mx, y - my) for x, y in turned)
+
+    def _spawn(self):
+        if not self.bag:
+            self.bag = list(range(7))
+            self.rng.shuffle(self.bag)
+        kind = self.bag.pop()
+        shape = [(x, y) for y, row in enumerate(self.SHAPES[kind].split("/"))
+                 for x, cell in enumerate(row) if cell == "#"]
+        initial = shape[:]
+        candidates = []
+        for rotation in range(4):
+            for x in range(self.WIDTH - max(dx for dx, dy in shape)):
+                if not self._fits(shape, x, 0):
+                    continue
+                y = 0
+                while self._fits(shape, x, y + 1):
+                    y += 1
+                trial = self.board.copy()
+                for dx, dy in shape:
+                    trial[y + dy, x + dx] = kind + 1
+                full = np.all(trial != 0, axis=1)
+                cleared = int(full.sum())
+                trial = np.vstack((np.zeros((cleared, self.WIDTH), dtype=int), trial[~full]))
+                occupied = trial != 0
+                heights = [self.HEIGHT - int(np.argmax(col)) if col.any() else 0 for col in occupied.T]
+                holes = sum(int((col[np.argmax(col):] == 0).sum()) for col in occupied.T if col.any())
+                bump = sum(abs(a - b) for a, b in zip(heights, heights[1:]))
+                score = cleared * 8 - sum(heights) * 0.5 - holes * 7 - bump * 0.35
+                candidates.append((score, x, rotation))
+            shape = self._rotate(shape)
+        if not candidates or not self._fits(initial, 3, 0):
+            self.piece = []
+            self.pause = 24
+            return
+        self.rng.shuffle(candidates)
+        _, self.target_x, self.turns = max(candidates, key=lambda item: item[0])
+        self.piece = initial
+        self.x, self.y, self.color = 3, 0, kind + 1
+
+    def _step(self):
+        # Enter at the centre, rotate, slide to the chosen column, then fall.
+        # Every intermediate pose must fit; no teleporting into the stack.
+        if self.turns:
+            turned = self._rotate(self.piece)
+            for kick in (0, -1, 1, -2, 2):
+                if self._fits(turned, self.x + kick, self.y):
+                    self.piece = turned
+                    self.x += kick
+                    self.turns -= 1
+                    return
+            self.turns = 0
+            self.target_x = self.x
+        if self.x != self.target_x:
+            dx = 1 if self.target_x > self.x else -1
+            if self._fits(self.piece, self.x + dx, self.y):
+                self.x += dx
+                return
+            self.target_x = self.x
+        if self._fits(self.piece, self.x, self.y + 1):
+            self.y += 1
+        else:
+            self._lock()
+
+    def _lock(self):
+        for dx, dy in self.piece:
+            self.board[self.y + dy, self.x + dx] = self.color
+        self.piece = []
+        self.clearing = list(np.flatnonzero(np.all(self.board != 0, axis=1)))
+        if self.clearing:
+            self.lines += len(self.clearing)
+            self.pause = 8
+        else:
+            self._spawn()
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        if self.pause:
+            self.pause -= 1
+            if not self.pause:
+                if self.clearing:
+                    rows = np.delete(self.board, self.clearing, axis=0)
+                    self.board = np.vstack((np.zeros((len(self.clearing), self.WIDTH), dtype=int), rows))
+                    self.clearing = []
+                else:
+                    self.board.fill(0)
+                self._spawn()
+        elif self.tick % 2 == 0:
+            self._step()
+        frame = np.zeros((N, N, 3))
+        frame[:15, 3:13] = np.array(self.COLORS)[self.board]
+        frame[:, [2, 13]] = frame[15, 2:14] = (72, 72, 72)
+        for dx, dy in self.piece:
+            _dot(frame, self.x + dx + 3, self.y + dy, self.COLORS[self.color])
+        for y in self.clearing:
+            frame[y, 3:3 + min(10, (9 - self.pause) * 2)] = WHITE
+        return _as_pixels(frame)
+
+
+class Invaders(Effect):
+    """Nine little marching aliens, steady waves, and a pilot that dodges fire."""
+
+    name = "invaders"
+    ALIEN = (".##.", "####", "#..#")
+    WIDTH, HEIGHT = 4, 3
+    COLORS = (GREEN, PINK, YELLOW)
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.tick = self.pause = 0
+        self._reset()
+
+    def _reset(self):
+        self.aliens = [(x * 5, y * 4) for y in range(3) for x in range(3)]
+        self.offset, self.drop, self.direction = 1, 0, 1
+        self.tick = self.bounces = 0
+        self.restart = False
+        self.shield = 40
+        self.ship = 7
+        self.shots, self.bombs, self.blasts = [], [], []
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        self.shield = max(0, self.shield - 1)
+        if self.pause:
+            self.pause -= 1
+            if not self.pause:
+                if self.restart:
+                    self._reset()
+                else:
+                    # A hit costs a ship, not the entire wave's progress.
+                    self.ship, self.shield = 7, 40
+                    self.shots, self.bombs = [], []
+        else:
+            if self.tick % 20 == 0:
+                self.offset += self.direction
+                if self.offset in (0, 2):
+                    self.direction *= -1
+                    self.bounces += 1
+                    if self.bounces % 4 == 0:
+                        self.drop += 1
+            if self.aliens and self.tick % 4 == 0:
+                target = min(self.aliens, key=lambda p: abs(p[0] + self.offset + self.WIDTH // 2 - self.ship))
+                target_x = target[0] + self.offset + self.WIDTH // 2
+                threats = [x for x, y in self.bombs if y >= 10]
+                safe = [x for x in range(1, 15) if all(abs(x - bomb) > 1 for bomb in threats)]
+                if safe and any(abs(self.ship - bomb) <= 1 for bomb in threats):
+                    target_x = min(safe, key=lambda x: (abs(x - self.ship), abs(x - target_x)))
+                self.ship += (target_x > self.ship) - (target_x < self.ship)
+                self.ship = max(1, min(14, self.ship))
+            if self.tick % 20 == 0:
+                self.shots.append((self.ship, 13))
+            if self.aliens and self.tick % 60 == 0:
+                x, y = self.rng.choice(self.aliens)
+                self.bombs.append((x + self.offset + self.WIDTH // 2, y + self.drop + self.HEIGHT))
+            if self.tick % 2 == 0:
+                live = []
+                for x, y in self.shots:
+                    y -= 1
+                    hit = next((a for a in self.aliens
+                                if a[0] + self.offset <= x < a[0] + self.offset + self.WIDTH
+                                and a[1] + self.drop <= y < a[1] + self.drop + self.HEIGHT), None)
+                    if hit is not None:
+                        self.aliens.remove(hit)
+                        self.blasts.append((x, y, 6))
+                    elif y >= 0:
+                        live.append((x, y))
+                self.shots = live
+            if self.tick % 4 == 0:
+                self.bombs = [(x, y + 1) for x, y in self.bombs if y < 15]
+            if not self.aliens or any(y + self.drop + self.HEIGHT - 1 >= 13 for x, y in self.aliens):
+                self.restart = True
+                self.pause = 20
+            elif not self.shield and any(y >= 14 and abs(x - self.ship) <= 1 for x, y in self.bombs):
+                self.restart = False
+                self.pause = 12
+                self.blasts.append((self.ship, 14, 6))
+        frame = np.zeros((N, N, 3))
+        for x, y in self.aliens:
+            _sprite(frame, x + self.offset, y + self.drop, self.ALIEN,
+                    self.COLORS[y // 4])
+        for x, y in self.shots:
+            _dot(frame, x, y, WHITE)
+        for x, y in self.bombs:
+            _dot(frame, x, y, RED)
+        for x, y, ttl in self.blasts:
+            for dx, dy in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+                _dot(frame, x + dx, y + dy, YELLOW)
+        self.blasts = [(x, y, ttl - 1) for x, y, ttl in self.blasts if ttl > 1]
+        _sprite(frame, self.ship - 1, 14, (".#.", "###"), CYAN)
+        return _as_pixels(frame)
+
+
+class Pacman(Effect):
+    """A native 16-pixel maze: dots, a chomping hero, and pursuing ghosts."""
+
+    name = "pacman"
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.cells = {(x, y) for y in range(2, 14) for x in range(2, 14)
+                      if x in (2, 7, 13) or y in (2, 7, 13)}
+        self.tick = self.pause = 0
+        self._reset()
+
+    def _reset(self):
+        self.hero = (2, 2)
+        self.ghosts = [(13, 13), (13, 2)]
+        self.dots = {p for p in self.cells if sum(p) % 2 == 0} - {self.hero}
+        self.direction = (1, 0)
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        if self.pause:
+            self.pause -= 1
+            if not self.pause:
+                self._reset()
+        else:
+            if self.tick % 3 == 0:
+                route = _path(self.hero, self.dots, set(self.ghosts), self.cells)
+                if not route:
+                    route = _path(self.hero, self.dots, set(), self.cells)
+                if route:
+                    nxt = route[0]
+                    self.direction = (nxt[0] - self.hero[0], nxt[1] - self.hero[1])
+                    self.hero = nxt
+                    self.dots.discard(nxt)
+                if self.hero in self.ghosts:
+                    self.pause = 18
+            if not self.pause and self.tick % 5 == 0:
+                for index, ghost in enumerate(self.ghosts):
+                    target = self.hero if self.rng.random() < 0.75 else self.rng.choice(sorted(self.cells))
+                    route = _path(ghost, {target}, set(), self.cells)
+                    if route:
+                        self.ghosts[index] = route[0]
+            if not self.dots or self.hero in self.ghosts:
+                self.pause = 18
+        frame = np.full((N, N, 3), (0, 0, 64), dtype=float)
+        for x, y in self.cells:
+            frame[y - 1:y + 2, x - 1:x + 2] = BLACK
+        for x, y in self.dots:
+            _dot(frame, x, y, (72, 72, 0))
+        for (x, y), color in zip(self.ghosts, (RED, PINK)):
+            _sprite(frame, x - 1, y - 1, (".#.", "###", "#.#"), color)
+        x, y = self.hero
+        _sprite(frame, x - 1, y - 1, (".#.", "###", ".#."), YELLOW)
+        if (self.tick // 3) % 2 == 0:
+            _dot(frame, x + self.direction[0], y + self.direction[1], BLACK)
+        return _as_pixels(frame)
+
+
+class PacFace(Effect):
+    """A large chomping mascot, with passing pellets and an occasional blink."""
+
+    name = "pacface"
+
+    def __init__(self, seed: int = 0):
+        self.tick = 0
+        self.blink = 65 + random.Random(seed).randrange(50)
+        ys, xs = np.mgrid[0:N, 0:N]
+        self.dx, self.dy = xs - 6.5, ys - 7.5
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        opening = (0.5 - 0.5 * math.cos(self.tick * math.tau / 22)) * 0.95
+        face = self.dx * self.dx + self.dy * self.dy <= 6 ** 2
+        mouth = (self.dx > 0) & (abs(self.dy) < self.dx * opening)
+        frame = np.zeros((N, N, 3))
+        frame[face & ~mouth] = YELLOW
+        # A two-pixel eye survives LED bloom; a one-pixel dimple does not.
+        frame[4:6, 7:9] = BLACK
+        if self.tick % 160 in range(self.blink, self.blink + 5):
+            frame[4, 7:9] = YELLOW
+        pellet = 15 - (self.tick % 22) * 0.35
+        if opening > 0.2 and pellet > 9:
+            _dot(frame, pellet, 7, WHITE)
+            _dot(frame, pellet, 8, WHITE)
+        return _as_pixels(frame)
+
+
+class GhostFace(Effect):
+    """A close-up arcade ghost with wandering pupils, blinks, and waving feet."""
+
+    name = "ghostface"
+    MASK = ("....######....", "..##########..", ".############.") + ("##############",) * 10
+
+    def __init__(self, seed: int = 0):
+        self.tick = 0
+        self.phase = random.Random(seed).uniform(0, math.tau)
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        frame = np.zeros((N, N, 3))
+        _sprite(frame, 1, 1, self.MASK, PINK)
+        for x in range(1, 15):
+            if (x + self.tick // 5) % 6 < 3:
+                _dot(frame, x, 14, PINK)
+        gaze = math.sin(self.tick * 0.045 + self.phase)
+        dx = 0 if gaze < -0.3 else 2 if gaze > 0.3 else 1
+        for x in (3, 9):
+            frame[5:9, x:x + 4] = WHITE
+            frame[6:8, x + dx:x + dx + 2] = BLACK
+            if self.tick % 115 in (105, 106, 107):
+                frame[5:7, x:x + 4] = PINK
+                frame[8, x:x + 4] = PINK
+        return _as_pixels(frame)
+
+
+class Tron(Effect):
+    """Four fast light cycles, unpredictable turns, fading trails, and crashes."""
+
+    name = "tron"
+    COLORS = (CYAN, PINK, GREEN, YELLOW)
+    TRAIL_LIFE = 32
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.tick = 0
+        self._reset()
+
+    def _reset(self):
+        self.heads = [(1, 5), (14, 10), (5, 14), (10, 1)]
+        self.directions = [(1, 0), (-1, 0), (0, -1), (0, 1)]
+        self.trails = {p: i for i, p in enumerate(self.heads)}
+        self.ages = {p: self.TRAIL_LIFE for p in self.heads}
+        self.waits = [0] * 4
+        self.blasts = []
+
+    def _respawn(self, index):
+        free = [(x, y) for y in range(N) for x in range(N) if (x, y) not in self.trails]
+        if not free:
+            return
+        self.heads[index] = self.rng.choice(free)
+        self.directions[index] = self.rng.choice(((1, 0), (-1, 0), (0, 1), (0, -1)))
+        self.trails[self.heads[index]] = index
+        self.ages[self.heads[index]] = self.TRAIL_LIFE
+
+    def _crash(self, index):
+        self.blasts.append((*self.heads[index], 10, index))
+        self.waits[index] = 6
+
+    def next(self) -> list[RGB]:
+        self.tick += 1
+        if self.tick % 2 == 0:
+            self.ages = {p: age - 1 for p, age in self.ages.items() if age > 1}
+            self.trails = {p: owner for p, owner in self.trails.items() if p in self.ages}
+            moves = {}
+            for index, (x, y) in enumerate(self.heads):
+                if self.waits[index]:
+                    self.waits[index] -= 1
+                    if not self.waits[index]:
+                        self._respawn(index)
+                    continue
+                dx, dy = self.directions[index]
+                choices = [(dx, dy), (-dy, dx), (dy, -dx)]
+                safe = [(a, b) for a, b in choices if 0 <= x + a < N and 0 <= y + b < N
+                        and (x + a, y + b) not in self.trails]
+                if not safe:
+                    self._crash(index)
+                    continue
+                direction = safe[0] if self.rng.random() > 0.55 else self.rng.choice(safe)
+                self.directions[index] = direction
+                moves[index] = (x + direction[0], y + direction[1])
+            for index, point in moves.items():
+                if list(moves.values()).count(point) > 1 or point in self.trails:
+                    self._crash(index)
+                else:
+                    self.heads[index] = point
+                    self.trails[point] = index
+                    self.ages[point] = self.TRAIL_LIFE
+        frame = np.zeros((N, N, 3))
+        for (x, y), owner in self.trails.items():
+            color = np.array(self.COLORS[owner]) * (0.2 + 0.65 * self.ages[x, y] / self.TRAIL_LIFE)
+            _dot(frame, x, y, color)
+        for index, (x, y) in enumerate(self.heads):
+            if not self.waits[index]:
+                _dot(frame, x, y, WHITE)
+        for x, y, ttl, owner in self.blasts:
+            spread = 1 if ttl > 5 else 2
+            for dx, dy in ((-spread, 0), (spread, 0), (0, -spread), (0, spread)):
+                _dot(frame, x + dx, y + dy, np.array(self.COLORS[owner]) * ttl / 10)
+        self.blasts = [(x, y, ttl - 1, owner) for x, y, ttl, owner in self.blasts if ttl > 1]
+        return _as_pixels(frame)
+
+
+class Hyperspace(Effect):
+    """Cruise, accelerate into blue-white streaks, coast, and drop out of warp."""
+
+    name = "hyperspace"
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.tick = 0
+        self.stars = [self._spawn(self.rng.uniform(0.1, 1)) for _ in range(32)]
+        self.ys, self.xs = np.mgrid[0:N, 0:N]
+
+    def _spawn(self, depth=1.0):
+        angle = self.rng.uniform(0, math.tau)
+        radius = self.rng.uniform(0.25, 1.4)
+        return [math.cos(angle) * radius, math.sin(angle) * radius, depth]
+
+    def next(self) -> list[RGB]:
+        phase = self.tick % 240
+        warp = max(0.0, min(1.0, (phase - 50) / 45, (220 - phase) / 45))
+        warp = warp * warp * (3 - 2 * warp)
+        self.tick += 1
+        speed = 0.008 + warp * 0.07
+        frame = np.zeros((N, N, 3))
+        for star in self.stars:
+            star[2] -= speed
+            if star[2] <= 0.06:
+                star[:] = self._spawn()
+            sx, sy, z = star
+            x, y = 7.5 + sx * 4 / z, 7.5 + sy * 4 / z
+            tail_z = z + speed * (1 + warp * 2)
+            tx, ty = 7.5 + sx * 4 / tail_z, 7.5 + sy * 4 / tail_z
+            dx, dy = x - tx, y - ty
+            along = np.clip(((self.xs - tx) * dx + (self.ys - ty) * dy) /
+                            max(dx * dx + dy * dy, 1e-9), 0, 1)
+            distance = np.hypot(self.xs - tx - along * dx, self.ys - ty - along * dy)
+            coverage = np.clip(0.85 - distance, 0, 1)
+            light = coverage * min(1.0, 0.25 + (1 - z)) * (0.4 + along * 0.6)
+            tone = np.array((255 - warp * 140, 255 - warp * 60, 255))
+            frame = np.maximum(frame, light[..., None] * tone)
+        return _as_pixels(frame)
+
+
+class Tunnel(Effect):
+    """A spiralling cylindrical tunnel with flowing bands and a dark centre."""
+
+    name = "tunnel"
+
+    def __init__(self, seed: int = 0):
+        self.t = seed * 0.7
+        self.ys, self.xs = np.mgrid[0:N, 0:N]
+
+    def next(self) -> list[RGB]:
+        self.t += 0.035
+        t = self.t
+        x = self.xs - 7.5 - math.sin(t * 0.7) * 1.5
+        y = self.ys - 7.5 - math.cos(t * 0.5) * 1.5
+        radius = np.hypot(x, y)
+        angle = np.arctan2(y, x)
+        depth = 9 / (radius + 1.5) + t * 0.8
+        twist = angle * 3 + depth * 3 - t * 0.5
+        band = (np.sin(twist) + 1) / 2
+        light = (0.08 + band ** 5 * 0.92) * np.clip((radius - 1.2) / 4, 0, 1)
+        frame = _hsv(0.52 + (1 - band) * 0.24, 1.0, light)
+        return _as_pixels(frame)
+
+
+class Streams(Effect):
+    """A panning network that grows links and carries packets between glowing nodes.
+
+    Geometry lives on a world larger than the panel. The camera wraps over a
+    periodic graph, so the view can drift indefinitely without an edge or a cut.
+    Lines and node halos use analytic coverage at each LED, not resized artwork.
+    """
+
+    name = "streams"
+    STYLE = "grid"
+    SPACING = 14
+    PALETTE = (CYAN, PINK)
+
+    def __init__(self, seed: int = 0):
+        self.rng = random.Random(seed)
+        self.t = 0.0
+        self.world = self.SPACING * 8
+        self.origin = (self.rng.uniform(-1, 1), self.rng.uniform(-1, 1))
+        self.ys, self.xs = np.mgrid[0:N, 0:N]
+        nodes = {}
+        for y in range(8):
+            for x in range(8):
+                jitter = 1.1 if self.STYLE == "web" else 0
+                nodes[x, y] = np.array((x * self.SPACING + self.rng.uniform(-jitter, jitter),
+                                       y * self.SPACING + self.rng.uniform(-jitter, jitter)))
+        self.edges = []
+        for (gx, gy), start in nodes.items():
+            directions = ((1, 0), (0, 1))
+            if self.STYLE == "web":
+                directions = ((1, 0), (0, 1), (1, 1))
+            elif self.STYLE == "lanes":
+                directions = ((1, 0), (1, 1 if gx % 2 else -1))
+            for dx, dy in directions:
+                if (dx, dy) != (1, 0) and self.rng.random() < 0.16:
+                    continue
+                end = nodes[(gx + dx) % 8, (gy + dy) % 8]
+                delta = (end - start + self.world / 2) % self.world - self.world / 2
+                points = [np.zeros(2)]
+                if self.STYLE == "circuit":
+                    # A dogleg distinguishes circuit traces from the square mesh.
+                    if dx:
+                        points += [np.array((delta[0] / 2, -1.5)), np.array((delta[0] / 2 + 1.5, 0))]
+                    else:
+                        points += [np.array((1.5, delta[1] / 2)), np.array((0, delta[1] / 2 + 1.5))]
+                elif self.STYLE == "lanes" and dy:
+                    points += [np.array((delta[0] / 2, 0)), np.array((delta[0] / 2, delta[1]))]
+                points.append(delta)
+                color = np.array(self.PALETTE[self.rng.randrange(len(self.PALETTE))])
+                self.edges.append((start, points, color, self.rng.uniform(0, 1.8)))
+
+    def _line(self, a, b):
+        delta = b - a
+        along = np.clip(((self.xs - a[0]) * delta[0] + (self.ys - a[1]) * delta[1]) /
+                        max(float(delta @ delta), 1e-9), 0, 1)
+        distance = np.hypot(self.xs - a[0] - along * delta[0], self.ys - a[1] - along * delta[1])
+        return np.clip(1.2 - distance, 0, 1)
+
+    def _glow(self, point, strength):
+        distance = np.hypot(self.xs - point[0], self.ys - point[1])
+        core = np.clip(1.3 - distance, 0, 1)
+        halo = np.exp(-distance * distance / 3.5) * strength
+        return core, halo
+
+    def next(self) -> list[RGB]:
+        self.t += 0.05
+        t = self.t
+        camera = np.array(self.origin) + np.array((t * 0.65, t * 0.4))
+        if self.STYLE == "lanes":
+            camera = np.array(self.origin) + np.array((t * 0.85, math.sin(t * 0.2) * 2))
+        frame = np.zeros((N, N, 3))
+        for start, points, color, phase in self.edges:
+            anchor = (start - camera + self.world / 2) % self.world - self.world / 2 + 7.5
+            margin = self.SPACING + 3
+            if not -margin < anchor[0] < N + margin or not -margin < anchor[1] < N + margin:
+                continue
+            clock = (t + phase) % 10
+            growth = min(1, (clock + 0.4) / 2.6)
+            fade = min(1, (10 - clock) / 0.7)
+            lengths = [float(np.linalg.norm(b - a)) for a, b in zip(points, points[1:])]
+            total = sum(lengths)
+            built = growth * total
+            packet = min(growth, (clock * 0.42) % 1) * total
+            covered = 0.0
+            for a, b, length in zip(points, points[1:], lengths):
+                fraction = max(0, min(1, (built - covered) / length))
+                if fraction > 0:
+                    ink = self._line(anchor + a, anchor + a + (b - a) * fraction)
+                    frame = np.maximum(frame, ink[..., None] * color * 0.85 * fade)
+                if covered <= packet <= covered + length:
+                    position = anchor + a + (b - a) * ((packet - covered) / length)
+                    core, halo = self._glow(position, 0.75)
+                    frame = np.maximum(frame, halo[..., None] * color * fade)
+                    frame = np.maximum(frame, core[..., None] * np.array(WHITE) * fade)
+                covered += length
+            # Arrival expands into a small halo at the receiving intersection.
+            arrival = max(0, (packet / total - 0.72) / 0.28)
+            for point, strength in ((anchor, 0.3), (anchor + points[-1], 0.3 + arrival * 0.7)):
+                core, halo = self._glow(point, strength)
+                frame = np.maximum(frame, halo[..., None] * color * fade)
+                frame = np.maximum(frame, core[..., None] * color * 0.95 * fade)
+        return _as_pixels(frame)
+
+
+class Circuit(Streams):
+    """Angular green/gold circuit traces with travelling signals."""
+
+    name = "circuit"
+    STYLE = "circuit"
+    SPACING = 13
+    PALETTE = (GREEN, YELLOW)
+
+
+class Metro(Streams):
+    """Parallel data lanes, switching links, and a lateral camera drift."""
+
+    name = "metro"
+    STYLE = "lanes"
+    SPACING = 11
+    PALETTE = (CYAN, YELLOW)
+
+
+class Synapses(Streams):
+    """A loose triangular web of violet/cyan nodes and firing connections."""
+
+    name = "synapses"
+    STYLE = "web"
+    SPACING = 13
+    PALETTE = (PINK, CYAN)
+
+
+ARCADE = {e.name: e for e in (Snake, Pong, Breakout, Tetris, Invaders, PacFace, GhostFace, Tron,
+                            Hyperspace, Tunnel)}
+NETWORKS = {e.name: e for e in (Streams, Circuit, Metro, Synapses)}
+ABSTRACT = ({e.name: e for e in (Plasma, Fire, Life, Rain, Starfield, Bounce, Rings, Pacman)}
+            | ARCADE | NETWORKS)
 
 
 def build(name: str, seed: int = 0) -> Effect:

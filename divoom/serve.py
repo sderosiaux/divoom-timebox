@@ -7,6 +7,7 @@ it back as an audio device. None of that should need a human.
 
     python -m divoom.serve logo spin
     python -m divoom.serve screensaver --each 60
+    python -m divoom.serve arcade --each 30
     python -m divoom.serve face doom
 """
 
@@ -46,17 +47,20 @@ def segments(args) -> Iterator[tuple[object, float | None]]:
             yield logo, None
 
     elif args.what == "play":
-        for seed in itertools.count(1):
-            yield effects.build(args.mode, seed), None
+        effect = effects.build(args.mode, 1)
+        while True:
+            yield effect, None
 
     elif args.what == "face":
         for seed in itertools.count(1):
             yield faces.Face(seed, faces.CHARACTERS[args.mode], fps=args.fps,
                              pace=args.pace), None
 
-    elif args.what == "screensaver":
+    elif args.what in ("screensaver", "arcade", "networks"):
+        names = {"arcade": effects.ARCADE, "networks": effects.NETWORKS}.get(
+            args.what, sorted(effects.ABSTRACT))
         for seed in itertools.count(1):
-            for name in sorted(effects.ABSTRACT):
+            for name in names:
                 yield effects.build(name, seed), args.each
 
     elif args.what == "logocycle":
@@ -65,11 +69,11 @@ def segments(args) -> Iterator[tuple[object, float | None]]:
                 yield effects.Logo(str(args.path or LOGO), mode, seed, fps=args.fps), args.each
 
     elif args.what == "mix":
-        for seed in itertools.count(1):
-            for mode in effects.Logo.MODES:
-                yield effects.Logo(str(args.path or LOGO), mode, seed, fps=args.fps), args.each
-                yield effects.build(sorted(effects.ABSTRACT)[seed % len(effects.ABSTRACT)],
-                                    seed), args.each
+        names = sorted(effects.ABSTRACT)
+        for index in itertools.count():
+            mode = effects.Logo.MODES[index % len(effects.Logo.MODES)]
+            yield effects.Logo(str(args.path or LOGO), mode, index + 1, fps=args.fps), args.each
+            yield effects.build(names[index % len(names)], index + 1), args.each
 
 
 def device(hint: str | None) -> tuple[str, str]:
@@ -88,7 +92,7 @@ def device(hint: str | None) -> tuple[str, str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="divoom.serve")
     ap.add_argument("what",
-                    choices=["logo", "logocycle", "mix", "play", "face", "screensaver"])
+                    choices=["logo", "logocycle", "mix", "play", "face", "screensaver", "arcade", "networks"])
     ap.add_argument("mode", nargs="?", default="spin",
                     help="logo mode, effect name, or character")
     ap.add_argument("--path", help="image for the logo modes")
@@ -102,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--channel", type=int, default=1)
     ap.add_argument("--mac", help="address or name fragment")
     args = ap.parse_args(argv)
+    if args.what == "play" and args.mode not in effects.ABSTRACT:
+        ap.error(f"unknown effect {args.mode!r}; try {', '.join(sorted(effects.ABSTRACT))}")
 
     log(f"serving {args.what} {args.mode} at {args.fps:g} fps")
     wait = FIRST_WAIT
